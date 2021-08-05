@@ -469,6 +469,20 @@ mcp2515_select_tx_buf_for_tx(mcp2515_virt_t* part)
 }
 
 static void
+mcp2515_can_msg_print(const can_msg_t* can_msg)
+{
+    // print the sent can message in slcan format
+    if (can_msg->eid)
+        printf("can message sent: %c%08x%02x",
+               can_msg->rtr ? 'R' : 'T', can_msg->id, can_msg->dlc);
+    else
+        printf("can message sent: %c%03x%02x", can_msg->rtr ? 'r' : 't', can_msg->id, can_msg->dlc);
+    for (int i=0; i<can_msg->dlc; ++i)
+        printf("%02x", can_msg->data[i]);
+    printf("\n");
+}
+
+static void
 mcp2515_tx_complete(mcp2515_virt_t* part)
 {
     // get index of transmission buffer
@@ -477,23 +491,6 @@ mcp2515_tx_complete(mcp2515_virt_t* part)
     // clear TXREQ bit
     uint8_t* txbctrl = mcp2515_get_register(part, MCP_TXB0CTRL + n * 16);
     *txbctrl &= ~(1<<MCP_TXREQ);
-
-    printf("MCP2515: tx of msg in buf %d complete\n", n);
-    // remove the tx rdy bit
-    part->tx_msg_ready &= ~(1<<n);
-    
-    // set interrupt flag bit
-    uint8_t* canintf = mcp2515_get_register(part, MCP_CANINTF);
-    *canintf |= (1<<(n + MCP_TX0IF));
-
-    // check if interrupt should be raised
-    uint8_t* caninte = mcp2515_get_register(part, MCP_CANINTE);
-    if (*caninte & (1<<(n + MCP_TX0IE))) {
-        // set canstat
-        mcp2515_canstat_icod_bits(part);
-        // raise interrupt
-        mcp2515_virt_int_enable(part);
-    }
 
     // extract the can message from the transmit buffers
     can_msg_t* can_msg = &part->canbus.on_wire;
@@ -518,18 +515,27 @@ mcp2515_tx_complete(mcp2515_virt_t* part)
         can_msg->data[i] = *txbctrl;
     }
 
+    printf("MCP2515: tx of msg in buf %d complete\n", n);
+
     // print the sent can message in slcan format
-    if (can_msg->eid)
-        printf("can message sent: %c%08x%02x",
-               can_msg->rtr ? 'R' : 'T', can_msg->id, can_msg->dlc);
-    else
-        printf("can message sent: %c%03x%02x", can_msg->rtr ? 'r' : 't', can_msg->id, can_msg->dlc);
-    for (int i=0; i<can_msg->dlc; ++i) {
-        txbctrl++;
-        printf("%02x", *txbctrl);
-    }
-    printf("\n");
+    mcp2515_can_msg_print(can_msg);
     
+    // remove the tx rdy bit
+    part->tx_msg_ready &= ~(1<<n);
+    
+    // set interrupt flag bit
+    uint8_t* canintf = mcp2515_get_register(part, MCP_CANINTF);
+    *canintf |= (1<<(n + MCP_TX0IF));
+
+    // check if interrupt should be raised
+    uint8_t* caninte = mcp2515_get_register(part, MCP_CANINTE);
+    if (*caninte & (1<<(n + MCP_TX0IE))) {
+        // set canstat
+        mcp2515_canstat_icod_bits(part);
+        // raise interrupt
+        mcp2515_virt_int_enable(part);
+    }
+
     // now check if more tx bufs are ready
     mcp2515_select_tx_buf_for_tx(part);
 }
@@ -763,64 +769,6 @@ mcp2515_handle_spi_byte(mcp2515_virt_t* part)
     }
 }
 
-// do a part software reset
-static void
-mcp2515_reset(mcp2515_virt_t* part)
-{
-    printf("MCP2515: software reset\n");
-    // set registers to zero
-    memset(part->registers, 0, sizeof(part->registers));
-    
-    // set control registers to default values
-    part->registers[MCP_CANSTAT] = 0x80;
-    part->registers[MCP_CANCTRL] = 0xe7;
-    
-    part->instruction = 0;
-    part->address = 0;
-    part->pending_opmode = Configuration;
-    part->quick_status = 0;
-    part->rx_status = 0;
-    part->bit_mod_mask = 0;
-    part->spi_data_in = 0;
-    part->spi_data_out = 0;
-    part->tx_msg_ready = 0;
-    part->tx_reg_sending = 0;
-    part->rx_read_flag = 0;
-    part->canbus.status = Idle;
-}
-
-static void
-mcp2515_virt_checkbus_hook(struct avr_irq_t * irq,
-                           uint32_t value,
-                           void * param)
-{
-    mcp2515_virt_t * part = (mcp2515_virt_t*) param;
-    if (part->canbus.status == Idle)
-    {
-        if (part->tx_msg_ready) {
-            avr_raise_irq(part->irq + CANBUS_BUSY_PART_TX, (uint32_t)part);
-        }
-        else {
-            mcp2515_change_op_mode(part);
-        }
-    }
-}
-
-// the Can bus is busy with device transmission
-static void
-mcp2515_virt_canbus_idle_hook(struct avr_irq_t * irq,
-                              uint32_t value,
-                              void * param)
-{
-    mcp2515_virt_t * part = (mcp2515_virt_t*) param;
-    part->canbus.status = Idle;
-    if (part->tx_msg_ready & 0x7)
-        avr_raise_irq(part->irq + CANBUS_BUSY_PART_TX, (uint32_t)part);
-    else {
-        mcp2515_change_op_mode(part);
-    }
-}
-
 static avr_cycle_count_t
 _mcp2515_canbus_tx_finished(avr_t * avr, avr_cycle_count_t when, void * param)
 {
@@ -844,7 +792,76 @@ _mcp2515_canbus_rx_finished(avr_t * avr, avr_cycle_count_t when, void * param)
     return 0;
 }
 
-// the Can bus is busy with device transmission
+// do a part software reset
+static void
+mcp2515_reset(mcp2515_virt_t* part)
+{
+    printf("MCP2515: software reset\n");
+    // set registers to zero
+    memset(&part->registers, 0, sizeof(part->registers));
+    
+    // set control registers to default values
+    part->registers[MCP_CANSTAT] = 0x80;
+    part->registers[MCP_CANCTRL] = 0xe7;
+    
+    part->instruction = 0;
+    part->address = 0;
+    part->pending_opmode = Configuration;
+    part->quick_status = 0;
+    part->rx_status = 0;
+    part->bit_mod_mask = 0;
+    part->spi_data_in = 0;
+    part->spi_data_out = 0;
+    part->tx_msg_ready = 0;
+    part->tx_reg_sending = 0;
+    part->rx_read_flag = 0;
+    // if the part was transmitting, then cancel it
+    if (part->canbus.status == TxBusy) {
+        avr_cycle_timer_cancel(part->avr, _mcp2515_canbus_tx_finished, part);
+        part->canbus.status = Idle;
+        memset(&part->canbus.on_wire, 0, sizeof(can_msg_t));
+    }
+}
+
+// hook to check on CAN bus after every SPI byte reception
+static void
+mcp2515_virt_checkbus_hook(struct avr_irq_t * irq,
+                           uint32_t value,
+                           void * param)
+{
+    mcp2515_virt_t * part = (mcp2515_virt_t*) param;
+    if (part->canbus.status == Idle)
+    {
+        // TODO: should check id's to see which goes first, rx or tx
+        if (part->tx_msg_ready) {
+            avr_raise_irq(part->irq + CANBUS_BUSY_PART_TX, (uint32_t)part);
+        } else if (part->canbus.rx_staged.id != 0) {
+            avr_raise_irq(part->irq + CANBUS_BUSY_PART_RX, (uint32_t)part);
+        } else {
+            mcp2515_change_op_mode(part);
+        }
+    }
+}
+
+// the CAN bus has become idle
+static void
+mcp2515_virt_canbus_idle_hook(struct avr_irq_t * irq,
+                              uint32_t value,
+                              void * param)
+{
+    mcp2515_virt_t * part = (mcp2515_virt_t*) param;
+    part->canbus.status = Idle;
+    // TODO: should check id's to see which goes first, rx or tx
+    if (part->tx_msg_ready & 0x7) {
+        avr_raise_irq(part->irq + CANBUS_BUSY_PART_TX, (uint32_t)part);
+    } else if (part->canbus.rx_staged.id != 0) {
+        avr_raise_irq(part->irq + CANBUS_BUSY_PART_RX, (uint32_t)part);
+    } else {
+        mcp2515_change_op_mode(part);
+    }
+}
+
+// the CAN bus is busy with device transmission
 static void
 mcp2515_virt_canbus_busy_tx_hook(struct avr_irq_t * irq,
                                  uint32_t value,
@@ -853,30 +870,32 @@ mcp2515_virt_canbus_busy_tx_hook(struct avr_irq_t * irq,
     mcp2515_virt_t * part = (mcp2515_virt_t*) param;
     if (part->tx_msg_ready & 0x7) {
         int which_tx = part->tx_msg_ready >> 4;
+        printf("CANBUS: sending can message from tx buf %d\n", which_tx);
         part->tx_reg_sending = which_tx + 1;
         // get duration of message transmission
         uint32_t duration_usec = 208;
         avr_cycle_timer_register_usec(part->avr, duration_usec, _mcp2515_canbus_tx_finished, part);
         part->canbus.status = TxBusy;
-        printf("CANBUS: sending can message from tx buf %d\n", which_tx);
     } else {
         avr_cycle_timer_cancel(part->avr, _mcp2515_canbus_tx_finished, part);
         avr_raise_irq(part->irq + CANBUS_IDLE, (uint32_t)part);
     }
 }
 
-// the Can bus is busy with message transmission
+// the CAN bus is busy with message reception
 static void
 mcp2515_virt_canbus_busy_rx_hook(struct avr_irq_t * irq,
                                  uint32_t value,
                                  void * param)
 {
+    printf("CANBUS: can bus receiving message\n");
     mcp2515_virt_t * part = (mcp2515_virt_t*) param;
+    memcpy(&part->canbus.on_wire, &part->canbus.rx_staged, sizeof(can_msg_t));
+    memset(&part->canbus.rx_staged, 0, sizeof(can_msg_t));
     // get duration of message transmission
     uint32_t duration_usec = 208;
     avr_cycle_timer_register_usec(part->avr, duration_usec, _mcp2515_canbus_rx_finished, part);
     part->canbus.status = RxBusy;
-    printf("CANBUS: can bus receiving message\n");
 }
 
 // the CS pin has changed
@@ -907,13 +926,15 @@ mcp2515_virt_cs_hook(struct avr_irq_t * irq,
     }
 }
 
+// interrupt pin deactivated
 void
 mcp2515_virt_int_release(mcp2515_virt_t* part)
 {
     avr_raise_irq(part->irq + MCP2515_INT_OUT, 1);
     printf("MCP2515: int released\n");
 }
-    
+
+// interrupt pin activated
 void
 mcp2515_virt_int_enable(mcp2515_virt_t* part)
 {
@@ -1097,6 +1118,28 @@ mcp2515_virt_in_hook(struct avr_irq_t * irq,
     }
     avr_raise_irq(part->irq + MCP2515_SPI_BYTE_OUT, part->spi_data_out);
     avr_raise_irq(part->irq + MCP2515_CHKBUS, (uint32_t)part);
+}
+
+// receive a can message
+void
+mcp2515_receive_can_message(mcp2515_virt_t *part,
+                            const can_msg_t* msg)
+{
+    if (part->canbus.status == Idle) {
+        printf("CANBUS: can message placed on bus for device reception\n");
+        memcpy(&part->canbus.on_wire, msg, sizeof(can_msg_t));
+        avr_raise_irq(part->irq + CANBUS_BUSY_PART_RX, (uint32_t)part);
+    } else {
+        printf("CANBUS: can message staged for reception, once bus is idle\n");
+        memcpy(&part->canbus.rx_staged, msg, sizeof(can_msg_t));
+    }
+}
+
+// status of canbus
+canbus_status_t
+mcp2515_canbus_status(mcp2515_virt_t *part)
+{
+    return part->canbus.status;
 }
 
 static const char * _mcp2515_irq_names[MCP2515_COUNT] = {

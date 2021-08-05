@@ -42,6 +42,7 @@ typedef struct canbus
 {
     canbus_status_t status;
     can_msg_t on_wire;
+    can_msg_t rx_staged;
 } canbus_t;
 
 enum {
@@ -102,7 +103,7 @@ typedef enum mcp2515_op_mode
  * bit 0 - tx buf 0 flagged for tx
  * bit 1 - tx buf 1 flagged for tx
  * bit 2 - tx buf 2 flagged for tx
- * bit 3,4,5 - which tx buf 0 to transmit first
+ * bit 3,4,5 - which tx buf to transmit first
  */
 typedef struct mcp2515_virt_t {
 	struct avr_t * avr;
@@ -110,7 +111,7 @@ typedef struct mcp2515_virt_t {
     uint8_t instruction;
     uint8_t address;
     uint8_t registers[256]; // all the registers for the mcp2515
-    mcp2515_op_mode_t pending_opmode;  // is there an opmode change waiting for tx finish
+    mcp2515_op_mode_t pending_opmode;  // is there an opmode change pending tx finish
     uint8_t quick_status;   // the data value used in read status instruction
     uint8_t rx_status;      // the data value used in rx status instruction
     uint8_t bit_mod_mask;   // mask value from bit mod instruction */
@@ -136,5 +137,12 @@ mcp2515_virt_init(struct avr_t * avr,
 extern void
 mcp2515_virt_connect(mcp2515_virt_t * p,
                      mcp2515_wiring_t * wiring);
+
+extern canbus_status_t
+mcp2515_canbus_status(mcp2515_virt_t *part);
+
+extern void
+mcp2515_receive_can_message(mcp2515_virt_t *p,
+                            const can_msg_t* msg);
 
 #endif /* MCP2515_VIRT_H_ */
