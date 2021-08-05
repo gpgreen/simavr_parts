@@ -1,12 +1,18 @@
-/*
-	mcp2515_virt.h
-
-    Copyright 2021 Greg Green <ggreen@bit-builder.com>
- */
-
-/*
- *  A virtual MCP2515 Can controller on the SPI bus.
+/* 
+ * This file is part of the simavr_parts project (https://github.com/simavr_parts).
+ * Copyright 2021 Greg Green <ggreen@bit-builder.com>
+ * 
+ * This program is free software: you can redistribute it and/or modify  
+ * it under the terms of the GNU General Public License as published by  
+ * the Free Software Foundation, version 3.
  *
+ * This program is distributed in the hope that it will be useful, but 
+ * WITHOUT ANY WARRANTY; without even the implied warranty of 
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU 
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License 
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MCP2515_VIRT_H_
